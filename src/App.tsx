@@ -563,6 +563,49 @@ export default function App() {
     }
   };
 
+  // Image Compression Helper before uploading/sending over network
+  const compressImageDataUrl = (dataUrl: string, maxDim = 1200, quality = 0.8): Promise<{ dataUrl: string; base64: string }> => {
+    return new Promise((resolve) => {
+      if (!dataUrl || !dataUrl.startsWith('data:image/')) {
+        const base64 = dataUrl.split(',')[1] || '';
+        return resolve({ dataUrl, base64 });
+      }
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          const base64 = dataUrl.split(',')[1] || '';
+          return resolve({ dataUrl, base64 });
+        }
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+        const compressedBase64 = compressedDataUrl.split(',')[1] || '';
+        resolve({ dataUrl: compressedDataUrl, base64: compressedBase64 });
+      };
+      img.onerror = () => {
+        const base64 = dataUrl.split(',')[1] || '';
+        resolve({ dataUrl, base64 });
+      };
+      img.src = dataUrl;
+    });
+  };
+
   // Clipboard Paste Handler
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
@@ -576,19 +619,18 @@ export default function App() {
           const blob = item.getAsFile();
           if (blob) {
             const reader = new FileReader();
-            reader.onload = () => {
-              const dataUrl = reader.result as string;
-              const base64 = dataUrl.split(',')[1] || '';
-              setClipboardImages(prev => [
-                ...prev,
-                {
-                  name: `clipboard-${Date.now()}.png`,
-                  mimeType: blob.type || 'image/png',
-                  base64,
-                  dataUrl
-                }
-              ]);
-              toast('✓ Đã dán ảnh từ Clipboard thành công');
+            reader.onload = async () => {
+              const rawDataUrl = reader.result as string;
+              const { dataUrl, base64 } = await compressImageDataUrl(rawDataUrl);
+              const newImg = {
+                name: `clipboard-${Date.now()}.jpg`,
+                mimeType: 'image/jpeg',
+                base64,
+                dataUrl
+              };
+              setClipboardImages(prev => [...prev, newImg]);
+              setUploadedFiles(prev => [...prev, newImg]);
+              toast('✓ Đã nén & dán ảnh từ Clipboard thành công');
             };
             reader.readAsDataURL(blob);
           }
@@ -608,16 +650,26 @@ export default function App() {
     if (!files || !files.length) return;
     Array.from(files).forEach(file => {
       const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        const base64 = dataUrl.split(',')[1] || '';
+      reader.onload = async () => {
+        const rawDataUrl = reader.result as string;
         const mimeType = file.type || (file.name.endsWith('.pdf') ? 'application/pdf' : 'image/png');
+
+        let finalDataUrl = rawDataUrl;
+        let finalBase64 = rawDataUrl.split(',')[1] || '';
+        let finalMime = mimeType;
+
+        if (mimeType.startsWith('image/')) {
+          const comp = await compressImageDataUrl(rawDataUrl);
+          finalDataUrl = comp.dataUrl;
+          finalBase64 = comp.base64;
+          finalMime = 'image/jpeg';
+        }
 
         const newFile = {
           name: file.name,
-          mimeType,
-          base64,
-          dataUrl
+          mimeType: finalMime,
+          base64: finalBase64,
+          dataUrl: finalDataUrl
         };
 
         setUploadedFiles(prev => [...prev, newFile]);
@@ -625,7 +677,7 @@ export default function App() {
         if (mimeType.startsWith('image/')) {
           setClipboardImages(prev => [...prev, newFile]);
         }
-        toast(`✓ Đã tải file: ${file.name}`);
+        toast(`✓ Đã tải & nén file: ${file.name}`);
       };
       reader.readAsDataURL(file);
     });

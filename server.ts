@@ -289,16 +289,9 @@ let templates: TemplateItem[] = [
 
 // Helper to get GoogleGenAI client
 function getGenAIClient(customKey?: string) {
-  const apiKey = (customKey || process.env.GEMINI_API_KEY || '').trim();
+  const apiKey = (customKey || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '').trim();
   if (!apiKey) return null;
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build'
-      }
-    }
-  });
+  return new GoogleGenAI({ apiKey });
 }
 
 function parseGeminiJson(rawText: string) {
@@ -340,7 +333,12 @@ async function callGeminiWithResilience(
 ): Promise<{ data: any; raw: string; fallback: boolean; warning?: string }> {
   if (!ai) {
     const data = fallbackGenerator();
-    return { data, raw: JSON.stringify(data, null, 2), fallback: true };
+    return {
+      data,
+      raw: JSON.stringify(data, null, 2),
+      fallback: true,
+      warning: 'Chưa nhận diện được GEMINI_API_KEY trên Vercel. Đã tự động kích hoạt bộ sinh dữ liệu thông minh.'
+    };
   }
 
   const primaryModel = preferredModel || systemSettings.geminiModel || 'gemini-3.8-flash';
@@ -349,6 +347,7 @@ async function callGeminiWithResilience(
   );
 
   let lastError: any = null;
+  const timeoutMs = process.env.VERCEL ? 8000 : 15000;
 
   for (const model of modelsToTry) {
     try {
@@ -358,7 +357,7 @@ async function callGeminiWithResilience(
       });
 
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('TIMEOUT_OR_HIGH_DEMAND')), 16000)
+        setTimeout(() => reject(new Error('TIMEOUT_OR_HIGH_DEMAND')), timeoutMs)
       );
 
       const response = await Promise.race([callPromise, timeoutPromise]);
@@ -1200,7 +1199,16 @@ app.post('/api/initialize-database', (req: Request, res: Response) => {
 
 // Fallback JSON 404 for any unhandled /api/* request (prevents Vercel HTML error response)
 app.all('/api/*', (req: Request, res: Response) => {
-  res.status(404).json({ ok: false, error: `API endpoint ${req.originalUrl} không tồn tại trên hệ thống.` });
+  res.status(404).json({ ok: false, error: `API endpoint ${req.originalUrl || req.url} không tồn tại trên hệ thống.` });
+});
+
+// Express Global JSON Error Handler (prevents Express from ever sending default HTML error pages)
+app.use((err: any, req: Request, res: Response, next: any) => {
+  console.error('[Express Global Error]', err);
+  res.status(200).json({
+    ok: false,
+    error: err?.message || String(err) || 'Lỗi xử lý máy chủ'
+  });
 });
 
 // Export Express app for Vercel Serverless Function & testing
