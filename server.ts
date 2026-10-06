@@ -598,7 +598,7 @@ ${text || 'Chủ đề thuật toán'}`;
     });
   } catch (error: any) {
     console.error('Analyze error:', error);
-    res.status(500).json({ ok: false, error: error.message || 'Lỗi khi phân tích đề bài' });
+    res.json({ ok: false, error: error.message || 'Lỗi khi phân tích đề bài' });
   }
 });
 
@@ -921,7 +921,7 @@ ${normalizedSourceText || ''}`;
     });
   } catch (error: any) {
     console.error('Generate problem error:', error);
-    res.status(500).json({ ok: false, error: error.message || 'Lỗi khi tạo đề bài' });
+    res.json({ ok: false, error: error.message || 'Lỗi khi tạo đề bài' });
   }
 });
 
@@ -978,7 +978,7 @@ ${JSON.stringify(problem || {})}`;
     });
   } catch (error: any) {
     console.error('Generate artifacts error:', error);
-    res.status(500).json({ ok: false, error: error.message || 'Lỗi khi sinh artifacts' });
+    res.json({ ok: false, error: error.message || 'Lỗi khi sinh artifacts' });
   }
 });
 
@@ -1045,7 +1045,7 @@ ${JSON.stringify({ problem, artifacts })}`;
     });
   } catch (error: any) {
     console.error('Validate error:', error);
-    res.status(500).json({ ok: false, error: error.message || 'Lỗi khi kiểm tra chất lượng' });
+    res.json({ ok: false, error: error.message || 'Lỗi khi kiểm tra chất lượng' });
   }
 });
 
@@ -1100,7 +1100,7 @@ app.post('/api/save-package', (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Save package error:', error);
-    res.status(500).json({ ok: false, error: error.message || 'Lỗi khi lưu bài tập' });
+    res.json({ ok: false, error: error.message || 'Lỗi khi lưu bài tập' });
   }
 });
 

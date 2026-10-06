@@ -485,18 +485,27 @@ export default function App() {
     fetchConfig();
   }, []);
 
-  // Safe JSON Fetch Helper to prevent Vercel / HTML 404 Unexpected token 'T' errors
+  // Safe JSON Fetch Helper to handle Vercel responses and display server error text if non-JSON occurs
   const safeFetchJson = async (url: string, options?: RequestInit): Promise<any> => {
     const res = await fetch(url, options);
+    const contentType = res.headers.get('content-type') || '';
     const text = await res.text();
+
+    if (!contentType.includes('application/json')) {
+      const rawSnippet = text.substring(0, 250).trim();
+      console.error(`Non-JSON response (${res.status}) from ${url}:`, text);
+      throw new Error(`Máy chủ phản hồi văn bản (${res.status} ${res.statusText}): "${rawSnippet || 'Không có nội dung'}"`);
+    }
+
     try {
-      return JSON.parse(text);
+      const json = JSON.parse(text);
+      if (!res.ok && !json.error) {
+        json.error = `Lỗi máy chủ HTTP ${res.status}: ${res.statusText}`;
+      }
+      return json;
     } catch {
-      console.error(`Non-JSON API response from ${url}:`, text);
-      throw new Error(
-        `API ${url} trả về nội dung HTML thay vì JSON (${res.status} ${res.statusText}). ` +
-        `Đang chạy trên Vercel? Vui lòng kiểm tra đã tạo Vercel Serverless Function (/api/index.ts) và đặt GEMINI_API_KEY trong Vercel Environment Variables.`
-      );
+      const rawSnippet = text.substring(0, 250).trim();
+      throw new Error(`Nội dung không phải JSON hợp lệ (${res.status}): "${rawSnippet}"`);
     }
   };
 
