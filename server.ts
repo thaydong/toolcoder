@@ -579,7 +579,7 @@ ${text || 'Chủ đề thuật toán'}`;
       };
     };
 
-    const result = await callGeminiWithResilience(ai, { parts }, fallbackGenerator);
+    const result = await callGeminiWithResilience(ai, parts, fallbackGenerator);
     return res.json({
       ok: true,
       analysis: result.data,
