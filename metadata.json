@@ -1,0 +1,6 @@
+{
+  "name": "OJ Problem Factory",
+  "description": "Công cụ tạo bài tập Tin học / Online Judge chuyên nghiệp bằng Gemini AI - Design by Lê Văn Đông",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
