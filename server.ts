@@ -699,18 +699,32 @@ function normalizeProblemMath(prob: any): any {
 // POST /api/generate-problem
 app.post('/api/generate-problem', async (req: Request, res: Response) => {
   try {
-    const { analysis, sourceText, customApiKey, isImageSource, sourceTab } = req.body;
+    const { analysis, sourceText, files, customApiKey, isImageSource, sourceTab } = req.body;
     const ai = getGenAIClient(customApiKey);
 
-    const hasImages = isImageSource || sourceTab === 'file';
+    const hasImages = isImageSource || sourceTab === 'file' || (Array.isArray(files) && files.length > 0);
     const normalizedSourceText = autoNormalizeMathText(sourceText || '');
+
+    const parts: any[] = [];
+    if (Array.isArray(files)) {
+      files.forEach((f: any) => {
+        if (f && f.base64 && f.mimeType) {
+          parts.push({
+            inlineData: {
+              data: f.base64.replace(/^data:[^;]+;base64,/i, '').replace(/\s/g, ''),
+              mimeType: f.mimeType
+            }
+          });
+        }
+      });
+    }
 
     const prompt = hasImages
       ? `Bạn là chuyên gia soạn thảo đề thi Online Judge.
-YÊU CẦU BẮT BUỘC: Nguồn dữ liệu là FILE ẢNH.
-Bạn PHẢI GIỮ NGUYÊN 100% NỘI DUNG ĐỀ BÀI ĐÃ CÓ TRONG FILE ẢNH, TUYỆT ĐỐI KHÔNG TỰ Ý THAY ĐỔI, THÊM BỚT HAY SÁNG TÁC LẠI NỘI DUNG.
+YÊU CẦU BẮT BUỘC: Nguồn dữ liệu là FILE ẢNH HOẶC FILE PDF.
+Bạn PHẢI GIỮ NGUYÊN 100% NỘI DUNG ĐỀ BÀI GỐC ĐÃ CÓ TRONG FILE ẢNH / FILE PDF, TUYỆT ĐỐI KHÔNG TỰ Ý THAY ĐỔI, THÊM BỚT, CHỈNH SỬA HAY SÁNG TÁC LẠI CÂU CHỮ.
 BẮT BUỘC TỰ ĐỘNG NHẬN DIỆN VÀ CHUẨN HÓA CÁC CÔNG THỨC TOÁN Ở ĐẦU VÀO: Mọi biểu thức như 10^5, 10^9, 10^18, 2*10^5, <=, >=, !=, |ai|, a[i] đều phải chuẩn hóa thành công thức LaTeX chuẩn đặt trong dấu $ (ví dụ: $1 \\le N \\le 10^5$, $|A_i| \\le 10^9$).
-Trích xuất chính xác tuyệt đối từng câu chữ mô tả đề bài, định dạng input, output, mọi ràng buộc constraints và các ví dụ mẫu có trong ảnh.
+Trích xuất chính xác tuyệt đối từng câu chữ mô tả đề bài, định dạng input, output, mọi ràng buộc constraints và các ví dụ mẫu có trong ảnh/PDF.
 Trả JSON DUY NHẤT, không markdown.
 
 Schema:
@@ -886,7 +900,8 @@ ${normalizedSourceText || ''}`;
       };
     };
 
-    const result = await callGeminiWithResilience(ai, prompt, fallbackGenerator);
+    const contents = parts.length > 0 ? [...parts, prompt] : prompt;
+    const result = await callGeminiWithResilience(ai, contents, fallbackGenerator);
     const normalizedProblem = result.data ? normalizeProblemMath(result.data) : result.data;
     return res.json({
       ok: true,
@@ -1173,6 +1188,14 @@ app.post('/api/initialize-database', (req: Request, res: Response) => {
   });
 });
 
+// Fallback JSON 404 for any unhandled /api/* request (prevents Vercel HTML error response)
+app.all('/api/*', (req: Request, res: Response) => {
+  res.status(404).json({ ok: false, error: `API endpoint ${req.originalUrl} không tồn tại trên hệ thống.` });
+});
+
+// Export Express app for Vercel Serverless Function & testing
+export default app;
+
 // Start server with Vite middleware in dev or static files in prod
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {
@@ -1193,4 +1216,6 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}

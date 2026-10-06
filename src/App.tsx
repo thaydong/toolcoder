@@ -416,7 +416,7 @@ export default function App() {
   const [extraInput, setExtraInput] = useState('');
   const [sourceTextInput, setSourceTextInput] = useState('');
   const [clipboardImages, setClipboardImages] = useState<ClipboardImage[]>([]);
-  const [uploadedFiles, setUploadedFiles] = useState<{ name: string; mimeType: string; base64: string }[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<{ name: string; mimeType: string; base64: string; dataUrl?: string }[]>([]);
 
   // Pipeline execution
   const [pipelineStep, setPipelineStep] = useState<number>(1);
@@ -457,6 +457,7 @@ export default function App() {
   const [testcasesList, setTestcasesList] = useState<any[]>([]);
   const [selectedTestcase, setSelectedTestcase] = useState<any | null>(null);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [viewingPdfFile, setViewingPdfFile] = useState<{ name: string; dataUrl: string } | null>(null);
 
   // MathJax re-render trigger
   const mathRef = useRef<HTMLDivElement>(null);
@@ -484,10 +485,24 @@ export default function App() {
     fetchConfig();
   }, []);
 
+  // Safe JSON Fetch Helper to prevent Vercel / HTML 404 Unexpected token 'T' errors
+  const safeFetchJson = async (url: string, options?: RequestInit): Promise<any> => {
+    const res = await fetch(url, options);
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      console.error(`Non-JSON API response from ${url}:`, text);
+      throw new Error(
+        `API ${url} trả về nội dung HTML thay vì JSON (${res.status} ${res.statusText}). ` +
+        `Đang chạy trên Vercel? Vui lòng kiểm tra đã tạo Vercel Serverless Function (/api/index.ts) và đặt GEMINI_API_KEY trong Vercel Environment Variables.`
+      );
+    }
+  };
+
   const fetchConfig = async () => {
     try {
-      const res = await fetch('/api/config');
-      const data = await res.json();
+      const data = await safeFetchJson('/api/config');
       if (data.ok) {
         setCfgModel(data.model || 'gemini-3.8-flash');
         setCfgSheet(data.spreadsheetId || '');
@@ -501,8 +516,7 @@ export default function App() {
 
   const fetchDashboard = async () => {
     try {
-      const res = await fetch('/api/dashboard');
-      const data = await res.json();
+      const data = await safeFetchJson('/api/dashboard');
       if (data.ok) {
         setStats(data.stats);
       }
@@ -513,8 +527,7 @@ export default function App() {
 
   const fetchProblems = async (query = '') => {
     try {
-      const res = await fetch(`/api/problems?q=${encodeURIComponent(query)}`);
-      const data = await res.json();
+      const data = await safeFetchJson(`/api/problems?q=${encodeURIComponent(query)}`);
       if (data.ok) {
         const normalized = (data.problems || []).map((p: any) => normalizeProblemMath(p));
         setProblemsList(normalized);
@@ -530,8 +543,7 @@ export default function App() {
 
   const fetchTemplates = async () => {
     try {
-      const res = await fetch('/api/templates');
-      const data = await res.json();
+      const data = await safeFetchJson('/api/templates');
       if (data.ok) {
         setTemplatesList(data.templates || []);
       }
@@ -542,8 +554,7 @@ export default function App() {
 
   const loadTestcases = async (problemId: string) => {
     try {
-      const res = await fetch(`/api/testcases/${problemId}`);
-      const data = await res.json();
+      const data = await safeFetchJson(`/api/testcases/${problemId}`);
       if (data.ok) {
         setTestcasesList(data.tests || []);
       }
@@ -600,24 +611,19 @@ export default function App() {
       reader.onload = () => {
         const dataUrl = reader.result as string;
         const base64 = dataUrl.split(',')[1] || '';
-        setUploadedFiles(prev => [
-          ...prev,
-          {
-            name: file.name,
-            mimeType: file.type || 'image/png',
-            base64
-          }
-        ]);
-        if (file.type.startsWith('image/')) {
-          setClipboardImages(prev => [
-            ...prev,
-            {
-              name: file.name,
-              mimeType: file.type || 'image/png',
-              base64,
-              dataUrl
-            }
-          ]);
+        const mimeType = file.type || (file.name.endsWith('.pdf') ? 'application/pdf' : 'image/png');
+
+        const newFile = {
+          name: file.name,
+          mimeType,
+          base64,
+          dataUrl
+        };
+
+        setUploadedFiles(prev => [...prev, newFile]);
+
+        if (mimeType.startsWith('image/')) {
+          setClipboardImages(prev => [...prev, newFile]);
         }
         toast(`✓ Đã tải file: ${file.name}`);
       };
@@ -626,19 +632,27 @@ export default function App() {
   };
 
   // Real Package ZIP Generation with JSZip
-  const generateAndDownloadZip = async (prob: ProblemItem, art: any, val: any) => {
+  const generateAndDownloadZip = async (prob?: ProblemItem | null, art?: any, val?: any) => {
+    const targetProb = prob || activeTestProblem || currentProblem || (problemsList.length > 0 ? problemsList[0] : null);
+    if (!targetProb) {
+      toast('Vui lòng chọn bài tập trước khi tải gói ZIP.');
+      return;
+    }
+    const effectiveArt = art || targetProb.artifacts || artifactsData;
+    const effectiveVal = val || targetProb.validation || validationData;
+
     try {
       const zip = new JSZip();
-      const code = prob.code || 'PROBLEM';
+      const code = targetProb.code || 'PROBLEM';
 
       // 1. problem.json
-      zip.file('problem.json', JSON.stringify(prob, null, 2));
+      zip.file('problem.json', JSON.stringify(targetProb, null, 2));
 
       // 2. README.md
-      zip.file('README.md', art?.readme_md || `# ${code} - ${prob.name}\n\nĐược tạo bởi OJ Problem Factory.`);
+      zip.file('README.md', effectiveArt?.readme_md || `# ${code} - ${targetProb.name}\n\nĐược tạo bởi OJ Problem Factory.`);
 
       // 3. problem.md
-      const problemMd = `# ${prob.name}\n\n## Đề bài\n\n${prob.statement}\n\n## Input\n\n${prob.input}\n\n## Output\n\n${prob.output}\n\n## Constraints\n\n${(prob.constraints || []).map(c => `- ${c}`).join('\n')}\n\n## Subtasks\n\n${(prob.subtasks || []).map(s => `- **${s.id}** (${s.points} điểm): ${s.constraints}`).join('\n')}\n\n## Samples\n\n${(prob.samples || []).map((s, i) => `### Sample ${i + 1}\n\n**Input**\n\`\`\`\n${s.input}\n\`\`\`\n\n**Output**\n\`\`\`\n${s.output}\n\`\`\``).join('\n\n')}`;
+      const problemMd = `# ${targetProb.name}\n\n## Đề bài\n\n${targetProb.statement}\n\n## Input\n\n${targetProb.input}\n\n## Output\n\n${targetProb.output}\n\n## Constraints\n\n${(targetProb.constraints || []).map(c => `- ${c}`).join('\n')}\n\n## Subtasks\n\n${(targetProb.subtasks || []).map(s => `- **${s.id}** (${s.points} điểm): ${s.constraints}`).join('\n')}\n\n## Samples\n\n${(targetProb.samples || []).map((s, i) => `### Sample ${i + 1}\n\n**Input**\n\`\`\`\n${s.input}\n\`\`\`\n\n**Output**\n\`\`\`\n${s.output}\n\`\`\``).join('\n\n')}`;
       zip.file('problem.md', problemMd);
 
       // 4. problem.html (Standalone HTML with MathJax)
@@ -646,7 +660,7 @@ export default function App() {
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <title>${prob.name || code}</title>
+  <title>${targetProb.name || code}</title>
   <style>
     body { font-family: -apple-system, Arial, sans-serif; max-width: 860px; margin: 40px auto; padding: 0 20px; line-height: 1.65; color: #3A2117; background: #FFF8EF; }
     h1, h2, h3 { color: #5A1F08; }
@@ -659,38 +673,38 @@ export default function App() {
   <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
 </head>
 <body>
-  <h1>${code} — ${prob.name}</h1>
-  <div class="box"><h3>Đề bài</h3><p>${prob.statement?.replace(/\n/g, '<br>')}</p></div>
-  <div class="box"><h3>Input</h3><p>${prob.input?.replace(/\n/g, '<br>')}</p></div>
-  <div class="box"><h3>Output</h3><p>${prob.output?.replace(/\n/g, '<br>')}</p></div>
-  <div class="box"><h3>Ràng buộc</h3><ul>${(prob.constraints || []).map(c => `<li>${c}</li>`).join('')}</ul></div>
+  <h1>${code} — ${targetProb.name}</h1>
+  <div class="box"><h3>Đề bài</h3><p>${targetProb.statement?.replace(/\n/g, '<br>')}</p></div>
+  <div class="box"><h3>Input</h3><p>${targetProb.input?.replace(/\n/g, '<br>')}</p></div>
+  <div class="box"><h3>Output</h3><p>${targetProb.output?.replace(/\n/g, '<br>')}</p></div>
+  <div class="box"><h3>Ràng buộc</h3><ul>${(targetProb.constraints || []).map(c => `<li>${c}</li>`).join('')}</ul></div>
 </body>
 </html>`;
       zip.file('problem.html', problemHtml);
 
       // 5. editorial.md
-      if (art?.editorial_md) {
-        zip.file('editorial.md', art.editorial_md);
+      if (effectiveArt?.editorial_md) {
+        zip.file('editorial.md', effectiveArt.editorial_md);
       }
 
       // 6. solution/
       const solFolder = zip.folder('solution');
-      if (art?.sol_cpp) solFolder?.file('sol.cpp', art.sol_cpp);
-      if (art?.sol_py) solFolder?.file('sol.py', art.sol_py);
+      if (effectiveArt?.sol_cpp) solFolder?.file('sol.cpp', effectiveArt.sol_cpp);
+      if (effectiveArt?.sol_py) solFolder?.file('sol.py', effectiveArt.sol_py);
 
       // 7. brute/
       const bruteFolder = zip.folder('brute');
-      if (art?.brute_cpp) bruteFolder?.file('brute.cpp', art.brute_cpp);
-      if (art?.brute_py) bruteFolder?.file('brute.py', art.brute_py);
+      if (effectiveArt?.brute_cpp) bruteFolder?.file('brute.cpp', effectiveArt.brute_cpp);
+      if (effectiveArt?.brute_py) bruteFolder?.file('brute.py', effectiveArt.brute_py);
 
       // 8. generator/
       const genFolder = zip.folder('generator');
-      if (art?.gen_cpp) genFolder?.file('gen.cpp', art.gen_cpp);
-      if (art?.gen_py) genFolder?.file('gen.py', art.gen_py);
+      if (effectiveArt?.gen_cpp) genFolder?.file('gen.cpp', effectiveArt.gen_cpp);
+      if (effectiveArt?.gen_py) genFolder?.file('gen.py', effectiveArt.gen_py);
 
       // 9. validation.json
-      if (val) {
-        zip.file('validation/validation.json', JSON.stringify(val, null, 2));
+      if (effectiveVal) {
+        zip.file('validation/validation.json', JSON.stringify(effectiveVal, null, 2));
       }
 
       // 10. tests/ (20 tests with exact brute-force calculated outputs)
@@ -699,25 +713,25 @@ export default function App() {
       for (let i = 1; i <= 20; i++) {
         const num = String(i).padStart(2, '0');
         const existing = sourceTests.find(t => t.test_no === i);
-        const sample = prob.samples?.[0];
+        const sample = targetProb.samples?.[0];
         const inContent = existing?.input_data || (i === 1 && sample ? sample.input : `${i * 5}\n${Array.from({ length: i * 5 }, (_, k) => ((k * 13 + i * 7) % 100) + 1).join(' ')}`);
-        const outContent = (i === 1 && sample?.output) ? sample.output : computeExactBruteForceOutput(prob, inContent);
+        const outContent = (i === 1 && sample?.output) ? sample.output : computeExactBruteForceOutput(targetProb, inContent);
         testFolder?.file(`test${num}.in`, inContent);
         testFolder?.file(`test${num}.out`, outContent);
       }
 
-      // 11. problem.pdf (100% valid Adobe PDF package document)
+      // 11. problem.pdf
       try {
-        const pdfDoc = await buildValidPdfDocument(prob);
+        const pdfDoc = await buildValidPdfDocument(targetProb);
         const pdfBlob = pdfDoc.output('blob');
         zip.file(`${code}.pdf`, pdfBlob);
       } catch (pdfErr) {
         console.warn('PDF zip embed warning:', pdfErr);
       }
 
-      // 12. problem.doc (Clean Microsoft Word document without background, fully formatted math)
+      // 12. problem.doc
       try {
-        const wordBlob = buildWordDocBlob(prob);
+        const wordBlob = buildWordDocBlob(targetProb);
         zip.file(`${code}.doc`, wordBlob);
       } catch (wordErr) {
         console.warn('Word zip embed warning:', wordErr);
@@ -727,12 +741,12 @@ export default function App() {
       const url = URL.createObjectURL(content);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${code}-v${prob.version || 1}.zip`;
+      a.download = `${code}-v${targetProb.version || 1}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      toast(`✓ Đã tải file nén ${code}-v${prob.version || 1}.zip`);
+      toast(`✓ Đã tải gói đầy đủ: ${code}-v${targetProb.version || 1}.zip`);
     } catch (e: any) {
       console.error('ZIP generation failed', e);
       toast('Lỗi khi nén ZIP');
@@ -1386,7 +1400,7 @@ export default function App() {
       const isImageSource = sourceTab === 'file' || filesToSend.length > 0;
 
       // Step 2: Analyze
-      const analyzeRes = await fetch('/api/analyze', {
+      const analyzeJson = await safeFetchJson('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1397,7 +1411,6 @@ export default function App() {
           sourceTab
         })
       });
-      const analyzeJson = await analyzeRes.json();
       if (!analyzeJson.ok) throw new Error(analyzeJson.error || 'Lỗi khi phân tích đề bài');
       if (analyzeJson.warning) {
         toast('⚡ ' + analyzeJson.warning);
@@ -1414,7 +1427,7 @@ export default function App() {
       );
 
       // Step 3: Generate Problem
-      const genProbRes = await fetch('/api/generate-problem', {
+      const genProbJson = await safeFetchJson('/api/generate-problem', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1425,7 +1438,6 @@ export default function App() {
           sourceTab
         })
       });
-      const genProbJson = await genProbRes.json();
       if (!genProbJson.ok) throw new Error(genProbJson.error || 'Lỗi khi tạo đề bài');
       const problemObj = genProbJson.problem;
       setCurrentProblem(problemObj);
@@ -1435,12 +1447,11 @@ export default function App() {
       setPipelineStatusText('Đang sinh Editorial chi tiết, Solution C++17, Python 3, Brute Force và Generator...');
 
       // Step 4: Generate Artifacts
-      const artRes = await fetch('/api/generate-artifacts', {
+      const artJson = await safeFetchJson('/api/generate-artifacts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ problem: problemObj, customApiKey: cfgKey })
       });
-      const artJson = await artRes.json();
       if (!artJson.ok) throw new Error(artJson.error || 'Lỗi khi sinh artifacts');
       const artifacts = artJson.artifacts;
       setArtifactsData(artifacts);
@@ -1450,12 +1461,11 @@ export default function App() {
       setPipelineStatusText('Reviewer AI đang kiểm tra tính nhất quán giữa Đề bài, Solution, Generator và Complexity...');
 
       // Step 5: Validate
-      const valRes = await fetch('/api/validate', {
+      const valJson = await safeFetchJson('/api/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ problem: problemObj, artifacts, customApiKey: cfgKey })
       });
-      const valJson = await valRes.json();
       if (!valJson.ok) throw new Error(valJson.error || 'Lỗi khi kiểm tra chất lượng');
       const validation = valJson.validation;
       setValidationData(validation);
@@ -1476,12 +1486,11 @@ export default function App() {
       setPipelineStatusText('Đang đóng gói 20 testcases, source code và đẩy lên cơ sở dữ liệu...');
 
       // Step 8: Save Package
-      const saveRes = await fetch('/api/save-package', {
+      const saveJson = await safeFetchJson('/api/save-package', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ problem: problemObj, artifacts, validation })
       });
-      const saveJson = await saveRes.json();
       if (!saveJson.ok) throw new Error(saveJson.error || 'Lỗi khi lưu gói bài tập');
       setPackageExportData(saveJson);
       setStepStatuses(prev => ({ ...prev, 8: 'done' }));
@@ -1905,32 +1914,69 @@ export default function App() {
                         </div>
                       </div>
 
-                      {clipboardImages.length > 0 && (
+                      {uploadedFiles.length > 0 && (
                         <div id="clipboardPreview" className="clipboardPreview">
                           <div className="flex justify-between items-center mb-2">
-                            <b className="text-xs text-[#5A1F08]">Ảnh đã đính kèm ({clipboardImages.length})</b>
+                            <b className="text-xs text-[#5A1F08]">Tệp đã đính kèm (Ảnh & PDF) ({uploadedFiles.length})</b>
                             <button
                               type="button"
-                              className="text-xs text-red-600 hover:underline"
-                              onClick={() => setClipboardImages([])}
+                              className="text-xs text-red-600 hover:underline cursor-pointer"
+                              onClick={() => {
+                                setUploadedFiles([]);
+                                setClipboardImages([]);
+                              }}
                             >
                               ✕ Xóa tất cả
                             </button>
                           </div>
-                          <div id="clipboardImages" className="flex flex-wrap gap-2">
-                            {clipboardImages.map((img, i) => (
-                              <div key={i} className="clipboardThumb">
-                                <img src={img.dataUrl} alt={`Ảnh ${i + 1}`} />
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setClipboardImages(prev => prev.filter((_, idx) => idx !== i))
-                                  }
-                                >
-                                  ×
-                                </button>
-                              </div>
-                            ))}
+                          <div id="clipboardImages" className="flex flex-wrap gap-2.5">
+                            {uploadedFiles.map((file, i) => {
+                              const isPdf = file.mimeType === 'application/pdf' || file.name.endsWith('.pdf');
+                              if (isPdf) {
+                                return (
+                                  <div key={i} className="flex items-center gap-2 p-2 bg-white border border-[#ead8cd] rounded-lg shadow-2xs">
+                                    <span className="text-xl">📄</span>
+                                    <div className="flex flex-col">
+                                      <span className="text-xs font-bold text-[#5A1F08] max-w-[140px] truncate">{file.name}</span>
+                                      <span className="text-[10px] text-[#8c7568]">File PDF</span>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="text-xs font-bold text-[#F45B0A] hover:bg-[#fff0e6] px-2 py-1 rounded border border-[#ffd5bf] cursor-pointer"
+                                      onClick={() => {
+                                        const url = file.dataUrl || `data:application/pdf;base64,${file.base64}`;
+                                        setViewingPdfFile({ name: file.name, dataUrl: url });
+                                      }}
+                                    >
+                                      👁 Xem PDF
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="text-xs text-red-600 font-bold hover:text-red-800 px-1 cursor-pointer"
+                                      onClick={() => {
+                                        setUploadedFiles(prev => prev.filter((_, idx) => idx !== i));
+                                      }}
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                );
+                              }
+                              return (
+                                <div key={i} className="clipboardThumb">
+                                  <img src={file.dataUrl || `data:${file.mimeType};base64,${file.base64}`} alt={`Tệp ${i + 1}`} />
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setUploadedFiles(prev => prev.filter((_, idx) => idx !== i));
+                                      setClipboardImages(prev => prev.filter(img => img.name !== file.name));
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       )}
@@ -2827,12 +2873,21 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    className="primary font-bold text-xs py-1.5 px-3.5 flex items-center gap-1.5 cursor-pointer shadow-sm bg-[#F45B0A] hover:bg-[#d84a00] text-white rounded-lg transition-all"
+                    className="primary font-bold text-xs py-1.5 px-3 flex items-center gap-1.5 cursor-pointer shadow-sm bg-[#F45B0A] hover:bg-[#d84a00] text-white rounded-lg transition-all"
                     onClick={() => downloadAllTestcasesZip(activeTestProblem)}
                     title="Tải về file ZIP chứa đầy đủ 20 testcases (test01.in/out -> test20.in/out)"
                   >
                     <span>📦</span>
-                    <span>TẢI TOÀN BỘ TESTCASE (.ZIP)</span>
+                    <span>TẢI 20 TESTCASE (.ZIP)</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary font-bold text-xs py-1.5 px-3 flex items-center gap-1.5 cursor-pointer shadow-sm bg-white hover:bg-[#fff7f0] text-[#5A1F08] border border-[#ead8cd] rounded-lg transition-all"
+                    onClick={() => generateAndDownloadZip(activeTestProblem)}
+                    title="Tải về trọn bộ ZIP gồm Đề bài, Solution C++/Python, Editorial, 20 Testcases, PDF & Word"
+                  >
+                    <span>🗂</span>
+                    <span>TẢI TRỌN BỘ CẢ BÀI (.ZIP)</span>
                   </button>
                 </div>
               </div>
@@ -3075,19 +3130,22 @@ export default function App() {
                   <button
                     className="primary"
                     onClick={async () => {
-                      const res = await fetch('/api/settings', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          geminiApiKey: cfgKey,
-                          geminiModel: cfgModel,
-                          spreadsheetId: cfgSheet,
-                          driveFolderId: cfgDrive,
-                          judgeApiUrl: cfgJudge
-                        })
-                      });
-                      const data = await res.json();
-                      toast(data.message || 'Đã lưu cấu hình');
+                      try {
+                        const data = await safeFetchJson('/api/settings', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            geminiApiKey: cfgKey,
+                            geminiModel: cfgModel,
+                            spreadsheetId: cfgSheet,
+                            driveFolderId: cfgDrive,
+                            judgeApiUrl: cfgJudge
+                          })
+                        });
+                        toast(data.message || 'Đã lưu cấu hình');
+                      } catch (err: any) {
+                        toast(err.message || 'Lỗi khi lưu cấu hình');
+                      }
                     }}
                   >
                     LƯU CẤU HÌNH
@@ -3096,10 +3154,13 @@ export default function App() {
                   <button
                     className="secondary"
                     onClick={async () => {
-                      const res = await fetch('/api/initialize-database', { method: 'POST' });
-                      const data = await res.json();
-                      setSettingsResult(JSON.stringify(data, null, 2));
-                      toast('✓ Đã khởi tạo cấu trúc cơ sở dữ liệu');
+                      try {
+                        const data = await safeFetchJson('/api/initialize-database', { method: 'POST' });
+                        setSettingsResult(JSON.stringify(data, null, 2));
+                        toast('✓ Đã khởi tạo cấu trúc cơ sở dữ liệu');
+                      } catch (err: any) {
+                        toast(err.message || 'Lỗi khi khởi tạo database');
+                      }
                     }}
                   >
                     KHỞI TẠO DATABASE
@@ -3108,10 +3169,13 @@ export default function App() {
                   <button
                     className="secondary"
                     onClick={async () => {
-                      const res = await fetch('/api/test-connections', { method: 'POST' });
-                      const data = await res.json();
-                      setSettingsResult(JSON.stringify(data, null, 2));
-                      toast('✓ Kiểm tra kết nối thành công');
+                      try {
+                        const data = await safeFetchJson('/api/test-connections', { method: 'POST' });
+                        setSettingsResult(JSON.stringify(data, null, 2));
+                        toast('✓ Kiểm tra kết nối thành công');
+                      } catch (err: any) {
+                        toast(err.message || 'Lỗi khi kiểm tra kết nối');
+                      }
                     }}
                   >
                     KIỂM TRA KẾT NỐI
@@ -3715,6 +3779,34 @@ export default function App() {
               >
                 ✕ Đóng cửa sổ
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* UPLOADED PDF VIEWER MODAL */}
+      {viewingPdfFile && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden shadow-2xl border border-[#e5d5c5]">
+            <div className="flex justify-between items-center px-4 py-3 bg-[#fff8ef] border-b border-[#f0dfd3]">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">📄</span>
+                <b className="text-sm text-[#5A1F08]">{viewingPdfFile.name}</b>
+              </div>
+              <button
+                type="button"
+                className="text-xs font-bold text-[#8c7568] hover:text-[#5A1F08] bg-white border border-[#e0cfc1] px-3 py-1 rounded-lg cursor-pointer hover:bg-[#fff0e6]"
+                onClick={() => setViewingPdfFile(null)}
+              >
+                ✕ Đóng viewer
+              </button>
+            </div>
+            <div className="flex-1 bg-[#525659]">
+              <iframe
+                src={viewingPdfFile.dataUrl}
+                className="w-full h-full border-0"
+                title={viewingPdfFile.name}
+              />
             </div>
           </div>
         </div>
